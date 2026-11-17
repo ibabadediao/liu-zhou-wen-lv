@@ -250,7 +250,7 @@ async function send(text) {
     })
 
     target.streaming = false
-    if (!target.content) target.content = '（本次没有生成有效回复，请再试一次）'
+    if (!target.content) target.content = '（服务暂时不可用，请稍后重试）'
     await refreshSessions()
   } catch (e) {
     target.streaming = false
