@@ -59,9 +59,10 @@ def router_node(state: MultiAgentState):
         logger.info(f"[router]意图分类结果: {result.intent}")
         return {"intent": result.intent}
     except Exception as e:
-        # 解析失败兜底: 文旅场景咨询占大头, 兜错方向损失最小
-        logger.error(f"[router]意图分类失败, 兜底为 tour_qa: {e}")
-        return {"intent": "tour_qa"}
+        # 解析失败兜底: chitchat Agent 不依赖外部工具, 空回答代价最小,
+        # 避免把"今天心情不好"这类纯闲聊强行路由到 tour_qa 编景点
+        logger.error(f"[router]意图分类失败, 兜底为 chitchat: {e}")
+        return {"intent": "chitchat"}
 
 def route_by_intent(state: MultiAgentState) -> str:
     """条件边: intent 字符串直接映射到子 Agent 节点名"""

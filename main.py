@@ -142,7 +142,8 @@ def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
 
     # 首条消息发送时才创建会话, 避免空会话
     if req.session_id is None:
-        session_id = create_session(user_id=user["id"])
+        title = query.strip()[:20] or "新对话"
+        session_id = create_session(user_id=user["id"], title=title)
         history: list[dict] = []
     else:
         _assert_owned_session(req.session_id, user)
@@ -170,8 +171,15 @@ def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
                 parts.append(chunk)
                 yield _sse("chunk", {"text": chunk})
         except Exception as e:
-            logger.error(f"[chat]对话执行失败: {e}", exc_info=True)
-            yield _sse("error", {"message": "智能体执行出错, 请稍后重试"})
+            # 网络瞬断/模型超时等: 已有片段仍落库 + 正常发 end, 前端至少能看到已生成的内容
+            logger.error(f"[chat]对话执行中断: {e}", exc_info=True)
+            partial = "".join(parts).strip()
+            if partial:
+                add_message(session_id, "assistant", partial)
+                yield _sse("end", {"answer": partial})
+            else:
+                yield _sse("end", {"answer": ""})
+            yield _sse("error", {"message": "回答尚未完成，请稍后再问一次"})
             return
 
         # 逐token流式下回答由所有片段拼接而成, 落库供下轮作为历史
