@@ -3,7 +3,7 @@ from typing_extensions import TypedDict
 
 from pydantic import BaseModel
 from langchain.agents import create_agent
-from langchain_core.messages import AnyMessage, AIMessage, HumanMessage
+from langchain_core.messages import AnyMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
@@ -202,15 +202,27 @@ class MultiAgentService:
         # 诊断日志: 首条为system说明摘要已随行, 若为user说明压缩未触发或被截断
         logger.info(f"[multi_agent]发送模型{len(messages)}条消息, 首条: [{messages[0]['role']}]")
 
-        # subgraphs=True: 让子Agent内部的每个超级步(思考/调工具/回答)都向上发射快照,
-        # 否则子Agent整个节点跑完才有一次输出, 前端看不到思考过程
-        for ns, chunk in self.graph.stream({"messages": messages}, stream_mode="values", subgraphs=True):
-            latest_message = chunk["messages"][-1]
-            # ns非空 = 事件来自子Agent内部, 过滤掉父层快照(与子Agent重复的最终回答)
-            # 子图首帧快照的messages[-1]是用户消息, 需用HumanMessage过滤
-            # 有内容的AI思考/工具结果/最终回答均透传, 与旧版行为一致
-            if ns and latest_message.content and not isinstance(latest_message, HumanMessage):
-                yield latest_message.content.strip() + "\n"
+        # stream_mode="messages": 逐 token 透传子Agent内部模型的生成片段
+        # (旧的 values 模式只在每个节点跑完后发一次完整快照, 最终回答会整块出现)
+        # subgraphs=True: 否则子Agent整个节点跑完才有一次输出
+        current_id = None
+        for ns, (chunk, _metadata) in self.graph.stream(
+            {"messages": messages}, stream_mode="messages", subgraphs=True
+        ):
+            # ns 为空表示事件来自父图(含 router 的结构化分类输出), 不应展示给用户
+            if not ns:
+                continue
+
+            text = chunk.content if isinstance(chunk.content, str) else ""
+            if not text:
+                continue
+
+            msg_id = getattr(chunk, "id", None)
+            # 新一条模型消息开始(如工具调用后的最终回答): 换行与上一段隔开
+            if current_id is not None and msg_id != current_id:
+                yield "\n"
+            current_id = msg_id
+            yield text
 
 
 if __name__ == '__main__':

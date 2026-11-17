@@ -164,18 +164,18 @@ def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
         # 首帧先告知会话ID, 前端保存后后续请求携带以维持上下文
         yield _sse("session", {"session_id": session_id})
 
-        last_chunk = ""
+        parts: list[str] = []
         try:
             for chunk in service.execute_stream(query, history):
-                last_chunk = chunk
+                parts.append(chunk)
                 yield _sse("chunk", {"text": chunk})
         except Exception as e:
             logger.error(f"[chat]对话执行失败: {e}", exc_info=True)
             yield _sse("error", {"message": "智能体执行出错, 请稍后重试"})
             return
 
-        # 最终回答 = 最后一个chunk(思考/工具片段之后的完整回答), 落库供下轮作为历史
-        answer = last_chunk.rstrip("\n")
+        # 逐token流式下回答由所有片段拼接而成, 落库供下轮作为历史
+        answer = "".join(parts).strip()
         if answer:
             add_message(session_id, "assistant", answer)
         yield _sse("end", {"answer": answer})
