@@ -1,0 +1,7 @@
+
+tour_prompt_path: prompts/tour_prompt.txt
+food_prompt_path: prompts/food_prompt.txt
+itinerary_prompt_path: prompts/itinerary_prompt.txt
+rag_summarize_prompt_path: prompts/rag_summarize_prompt.txt
+router_prompt_path: prompts/router_prompt.txt
+chitchat_prompt_path: prompts/chitchat_prompt.txt

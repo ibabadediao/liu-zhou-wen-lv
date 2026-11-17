@@ -1,0 +1,10 @@
+collection_name: liuzhou_tourism
+persist_directory: chroma_db
+k: 4   # 在向量检索时匹配的向量数量
+data_path: data   # 数据目录，用于存储原始文本数据
+md5_hex_store: md5.txt   #用于存储已处理的文本的md5值，避免重复处理
+allow_knowledge_file_type: ["txt","pdf"]   # 允许处理的文本文件类型
+
+chunk_size: 400  # 每个文本块的字符数(文旅资料段落较长, 400字保留更完整语境)
+chunk_overlap: 50  # 每个文本块之间的最大可重叠字符数
+separators: ["\n\n", "\n", ".", "!", ",", "?", "！", "。", " ", ""]  # 文本块分隔符，用于将文本分割为多个块

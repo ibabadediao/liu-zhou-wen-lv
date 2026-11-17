@@ -1,0 +1,2 @@
+chat_model_name: qwen3.8-max-0902
+embedding_model_name: text-embedding-v4

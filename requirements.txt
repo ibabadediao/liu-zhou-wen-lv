@@ -1,0 +1,17 @@
+# 柳州文旅智能体依赖
+# 安装: pip install -r requirements.txt
+streamlit
+fastapi
+uvicorn[standard]
+pydantic
+langchain
+langchain-core
+langchain-community
+langchain-chroma
+langchain-text-splitters
+langgraph
+dashscope
+pypdf
+requests
+pyyaml
+pytest
