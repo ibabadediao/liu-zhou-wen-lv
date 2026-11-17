@@ -49,6 +49,7 @@ def _init_db():
                     session_id INTEGER NOT NULL,
                     role       TEXT NOT NULL,
                     content    TEXT NOT NULL,
+                    files_json TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 )
@@ -61,6 +62,12 @@ def _init_db():
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)"
             )
+
+            # 旧库迁移: 消息表增加 files_json 列, 用于持久化上传文件的元信息(刷新后恢复图片预览)
+            msg_columns = [row["name"] for row in conn.execute("PRAGMA table_info(messages)")]
+            if "files_json" not in msg_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN files_json TEXT")
+                logger.info("[chat_history]messages 表已迁移: 新增 files_json 列")
     finally:
         conn.close()
 
@@ -131,33 +138,44 @@ def get_messages(session_id: int) -> list[dict]:
     """
     查询指定会话的全部消息, 按写入顺序返回
     :param session_id: 会话ID
-    :return: 消息列表 [{"role": "user"|"assistant", "content": xxx}, ...]
+    :return: 消息列表 [{"role": "user"|"assistant", "content": xxx, "uploadedFiles": [...], ...}, ...]
     """
+    import json as _json
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id",
+            "SELECT role, content, files_json FROM messages WHERE session_id = ? ORDER BY id",
             (session_id,)
         ).fetchall()
-        return [{"role": row["role"], "content": row["content"]} for row in rows]
+        result = []
+        for row in rows:
+            msg = {"role": row["role"], "content": row["content"]}
+            if row["files_json"]:
+                try:
+                    msg["uploadedFiles"] = _json.loads(row["files_json"])
+                except Exception:
+                    pass
+            result.append(msg)
+        return result
     finally:
         conn.close()
 
 
-def add_message(session_id: int, role: str, content: str):
+def add_message(session_id: int, role: str, content: str, files_json: str | None = None):
     """
     向指定会话追加一条消息, 同时刷新会话的更新时间;
     若会话还是默认标题且写入的是用户消息, 则自动用消息内容生成会话标题
     :param session_id: 会话ID
     :param role: 角色, user 或 assistant
     :param content: 消息内容
+    :param files_json: 上传文件元信息的 JSON 字符串(仅用户消息可能有)
     """
     conn = _connect()
     try:
         with conn:
             conn.execute(
-                "INSERT INTO messages(session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, _now())
+                "INSERT INTO messages(session_id, role, content, files_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, content, files_json, _now())
             )
 
             # 首条用户消息自动生成会话标题

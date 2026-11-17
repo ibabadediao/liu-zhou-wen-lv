@@ -6,6 +6,7 @@ import requests
 from langchain_core.tools import tool
 from rag.rag_service import RagSummarizeService
 from utils.config_handler import agent_config
+from utils.file_reader import list_project_documents, read_project_document
 from utils.logger_handler import logger
 
 rag = RagSummarizeService()
@@ -119,6 +120,21 @@ def get_user_location() -> str:
     except Exception as e:
         logger.warning(f"[get_user_location]IP定位异常: {e}")
         return "IP定位失败"
+
+
+@tool(description="列出项目内置的柳州文旅资料文件(景点/美食/行程/文化等), 返回文件名列表供后续读取")
+def list_documents() -> str:
+    docs = list_project_documents()
+    if not docs:
+        return "项目资料目录为空"
+    lines = [f"{d['name']}  ({d['size']} 字节)" for d in docs]
+    return "项目内置资料文件:\n" + "\n".join(lines)
+
+
+@tool(description="读取项目内置资料文件的完整内容, filename 必须是 list_documents 返回的文件名之一")
+def view_document(filename: str) -> str:
+    content = read_project_document(filename)
+    return content
 
 
 if __name__ == "__main__":

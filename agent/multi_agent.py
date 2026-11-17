@@ -11,7 +11,8 @@ from model.factory import chat_model
 from utils.logger_handler import logger
 from utils.prompt_loader import (load_tour_prompt, load_food_prompt,
                                  load_itinerary_prompt, load_chitchat_prompt, load_router_prompt)
-from agent.tools.agent_tools import (rag_summarize, get_weather, get_user_location, get_current_date)
+from agent.tools.agent_tools import (rag_summarize, get_weather, get_user_location,
+                                      get_current_date, list_documents, view_document)
 from agent.tools.middleware import monitor_tool, log_before_model
 
 # 携带的上下文记忆条数: 只取最近N条历史消息, 防止上下文过长
@@ -70,31 +71,33 @@ def route_by_intent(state: MultiAgentState) -> str:
 
 
 # ============ 四个专职子 Agent: 各自独立的工具与静态专属提示词 ============
+_DOC_TOOLS = [list_documents, view_document]   # 所有子 Agent 共享的文档浏览工具
+
 tour_agent = create_agent(
     model=chat_model,
     system_prompt=load_tour_prompt(),
-    tools=[rag_summarize, get_weather, get_user_location],
+    tools=[rag_summarize, get_weather, get_user_location] + _DOC_TOOLS,
     middleware=[monitor_tool, log_before_model],
 )
 
 food_agent = create_agent(
     model=chat_model,
     system_prompt=load_food_prompt(),
-    tools=[rag_summarize, get_user_location],
+    tools=[rag_summarize, get_user_location] + _DOC_TOOLS,
     middleware=[monitor_tool, log_before_model],
 )
 
 itinerary_agent = create_agent(
     model=chat_model,
     system_prompt=load_itinerary_prompt(),
-    tools=[rag_summarize, get_current_date, get_weather, get_user_location],
+    tools=[rag_summarize, get_current_date, get_weather, get_user_location] + _DOC_TOOLS,
     middleware=[monitor_tool, log_before_model],
 )
 
 chitchat_agent = create_agent(
     model=chat_model,
     system_prompt=load_chitchat_prompt(),
-    tools=[get_weather],
+    tools=[get_weather] + _DOC_TOOLS,
     middleware=[monitor_tool, log_before_model],
 )
 
@@ -210,12 +213,21 @@ class MultiAgentService:
             logger.error(f"[multi_agent]摘要压缩失败, 本轮退回截断模式: {e}")
             return ""
 
-    def execute_stream(self, query: str, history: list[dict] | None = None):
+    def execute_stream(self, query: str, history: list[dict] | None = None,
+                       file_context: str | None = None):
         """
         执行多智能体, 支持携带历史对话实现上下文记忆
         :param query: 当前用户输入
         :param history: 当前会话的历史消息列表, 格式 [{"role": "user"/"assistant", "content": xxx}, ...]
+        :param file_context: 用户上传文件解析后的文本内容, 会作为额外上下文拼进 user message
         """
+        # 把文件上下文拼进当前 user message, 让模型在回答时能看到
+        if file_context:
+            query = (
+                f"[用户上传的参考资料]\n{file_context}\n\n"
+                f"[用户的问题]\n{query}"
+            )
+
         # 注意: 此处绝不能再截断! 历史长度/压缩策略由compress_history统一负责,
         # 若在这里取[-N:]会把位于列表开头的摘要system消息切掉(双重截断bug)
         messages = (history or []) + [

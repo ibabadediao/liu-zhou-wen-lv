@@ -14,7 +14,7 @@ from utils.config_handler import rag_config
 """
 
 # DashScope 的 OpenAI 兼容模式端点
-# 注意: qwen3.8 等新模型仅在该接口提供, 旧的原生 Generation 接口(ChatTongyi)会报"url error"
+# 注意: qwen3.8 / deepseek-v4.1-flash 等模型仅在该接口提供, 旧的原生 Generation 接口会报"url error"
 DASHSCOPE_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # 基础模型工厂类
@@ -37,7 +37,7 @@ class EmbeddingModelFactory(BaseModelFactory):
     def generator(self) -> Optional[Embeddings | BaseChatModel]:
         return DashScopeEmbeddings(model = rag_config['embedding_model_name'])
 
-# 创建聊天模型实例
+# 创建聊天模型实例 (deepseek-v4.1-flash 原生支持视觉, 不再需要独立 vision_model)
 chat_model = ChatModelFactory().generator()
 # 创建嵌入模型实例
 embedding_model = EmbeddingModelFactory().generator()

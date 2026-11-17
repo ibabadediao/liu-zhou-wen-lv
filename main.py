@@ -9,8 +9,9 @@
 """
 import json
 import os
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Path as PathDep, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,7 @@ from utils.chat_history import (
     get_session,
     list_sessions,
 )
+from utils.file_reader import UPLOAD_ROOT, IMAGE_EXTS, is_allowed, read_file, save_uploaded_file
 from utils.logger_handler import logger
 from utils.path_tool import get_abs_path
 
@@ -52,6 +54,9 @@ summary_caches: dict[int, dict] = {}
 class ChatRequest(BaseModel):
     query: str
     session_id: int | None = None
+    # 用户上传并解析过的文件: [{name, content, file_type}]
+    # 前端上传后把解析结果(文本)直接带过来, 后端不再重复解析
+    uploaded_files: list[dict] | None = None
 
 
 class RegisterRequest(BaseModel):
@@ -128,6 +133,48 @@ def health():
     return {"status": "ok", "service": "柳州文旅智能体"}
 
 
+# ============ 文件上传接口 ============
+
+@app.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    user: dict = Depends(auth.get_current_user),
+):
+    """
+    单文件上传 + 即时解析: 保存后用 file_reader 提取内容返回给前端,
+    前端再把解析文本塞进 /chat 的 uploaded_files 字段
+    """
+    filename = file.filename or "unnamed"
+    if not is_allowed(filename):
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {filename}")
+
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:   # 15MB 上限
+        raise HTTPException(status_code=400, detail="文件过大, 限制 15MB")
+
+    abs_path, ext = save_uploaded_file(filename, content, user_id=user["id"])
+    file_type, text = read_file(abs_path)
+
+    # 计算相对路径: 前端用 /files/{relative_path} 就能访问 (同源托管)
+    relative_path = os.path.relpath(abs_path, UPLOAD_ROOT).replace(os.sep, "/")
+
+    # 截取过长内容 (传给前端的是预览, 完整内容在 /chat 里再用)
+    preview = text[:2000] + ("\n...(内容过长, 仅显示前 2000 字)" if len(text) > 2000 else "")
+
+    return {
+        "name": filename,
+        "file_type": file_type,
+        "size": len(content),
+        "preview": preview,
+        "relative_path": relative_path,   # 持久化访问路径, 刷新后仍可用
+        "is_image": ext in IMAGE_EXTS,
+        # 完整内容也返回给前端, 发送消息时会一并带回来
+        "full_content": text,
+    }
+
+
+# ============ 对话接口 ============
+
 @app.post("/chat")
 def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
     """
@@ -135,10 +182,25 @@ def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
     1. session_id 为空则新建会话, 否则先校验归属再加载历史
     2. 历史超阈值时先做滚动摘要压缩, 再交给多智能体流式执行
     3. 思考/工具/回答的每个片段以 chunk 事件推送, 最终回答以 end 事件推送并落库
+    4. uploaded_files 里的文件解析文本会作为额外上下文拼进 user message
     """
     query = req.query.strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="query 不能为空")
+    if not query and not req.uploaded_files:
+        raise HTTPException(status_code=400, detail="query 或上传文件不能为空")
+
+    # 把上传文件解析的文本合并成一段上下文
+    file_context = None
+    if req.uploaded_files:
+        parts = []
+        for f in req.uploaded_files:
+            name = f.get("name", "未命名文件")
+            ftype = f.get("file_type", "")
+            content = f.get("full_content") or f.get("content") or ""
+            if content:
+                parts.append(f"【{ftype}】{name}\n{content}")
+        if parts:
+            file_context = "\n\n---\n\n".join(parts)
+            logger.info(f"[chat]合并 {len(req.uploaded_files)} 个上传文件, 共 {len(file_context)} 字")
 
     # 首条消息发送时才创建会话, 避免空会话
     if req.session_id is None:
@@ -159,15 +221,42 @@ def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
         logger.error(f"[chat]历史压缩失败, 使用原始历史: {e}")
         history = get_messages(session_id) if req.session_id is not None else []
     summary_caches[session_id] = cache
-    add_message(session_id, "user", query)
+
+    # 消息落库: query 可能为空(仅上传文件), 此时用默认文案
+    display_query = query or "（仅查看上传的文件）"
+
+    # 组装上传文件的持久化元信息 (用于刷新后恢复图片预览)
+    files_json = None
+    if req.uploaded_files:
+        meta_list = []
+        for f in req.uploaded_files:
+            item = {
+                "name": f.get("name", ""),
+                "file_type": f.get("file_type", ""),
+                "relative_path": f.get("relative_path"),  # 可持久化访问路径
+            }
+            # 只有后端 upload 接口返回的文件才可能有 is_image 标识
+            name_lower = item["name"].lower()
+            item["is_image"] = item.get("is_image") or any(
+                name_lower.endswith(ext) for ext in IMAGE_EXTS
+            )
+            if item["relative_path"]:   # 有可访问路径才存 (确保刷新后能恢复)
+                meta_list.append(item)
+        if meta_list:
+            files_json = json.dumps(meta_list, ensure_ascii=False)
+
+    add_message(session_id, "user", display_query, files_json=files_json)
 
     def event_stream():
         # 首帧先告知会话ID, 前端保存后后续请求携带以维持上下文
-        yield _sse("session", {"session_id": session_id})
+        first_frame = {"session_id": session_id}
+        if req.uploaded_files:
+            first_frame["uploaded_names"] = [f.get("name") for f in req.uploaded_files]
+        yield _sse("session", first_frame)
 
         parts: list[str] = []
         try:
-            for chunk in service.execute_stream(query, history):
+            for chunk in service.execute_stream(query, history, file_context=file_context):
                 parts.append(chunk)
                 yield _sse("chunk", {"text": chunk})
         except Exception as e:
@@ -215,6 +304,33 @@ def remove_session(session_id: int, user: dict = Depends(auth.get_current_user))
     delete_session(session_id)
     summary_caches.pop(session_id, None)
     return {"deleted": session_id}
+
+
+# ============ 上传文件访问接口 (同源托管) ============
+
+@app.get("/files/{file_path:path}")
+def serve_uploaded_file(file_path: str, user: dict = Depends(auth.get_current_user)):
+    """
+    访问用户上传的文件(图片/文档等), 同源托管;
+    仅允许访问 data/uploads/ 下的文件, 防止路径穿越
+    """
+    upload_root = os.path.normpath(UPLOAD_ROOT)
+    target = os.path.normpath(os.path.join(upload_root, file_path))
+
+    # 路径穿越检查
+    if not target.startswith(upload_root + os.sep) and target != upload_root:
+        raise HTTPException(status_code=400, detail="路径非法")
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    # 额外安全: 如果路径形如 "<user_id>/filename", 确认 user_id 匹配
+    # 让用户只能访问自己上传的文件
+    rel = os.path.relpath(target, upload_root).replace(os.sep, "/")
+    parts = rel.split("/")
+    if parts and parts[0].isdigit() and int(parts[0]) != user["id"]:
+        raise HTTPException(status_code=403, detail="无权访问此文件")
+
+    return FileResponse(target)
 
 
 # ============ 前端静态资源(构建产物存在时同源托管) ============

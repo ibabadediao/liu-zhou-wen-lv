@@ -43,15 +43,42 @@ export const sessionApi = {
 }
 
 /**
+ * 文件上传: multipart/form-data, 后端保存 + 解析后返回预览和全文
+ */
+export async function uploadFile(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const res = await fetch('/upload', {
+    method: 'POST',
+    credentials: 'include',
+    body: fd,
+  })
+  if (res.status === 401) {
+    const err = new Error('未登录或登录已过期')
+    err.status = 401
+    throw err
+  }
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.detail || `上传失败(${res.status})`)
+  }
+  return data
+}
+
+/**
  * 流式对话: 用 fetch + ReadableStream 解析 SSE
  * (EventSource 不支持自定义请求体与 POST, 因此手写解析)
  */
-export async function streamChat({ query, sessionId, onEvent, signal }) {
+export async function streamChat({ query, sessionId, uploadedFiles, onEvent, signal }) {
+  const body = { query, session_id: sessionId }
+  if (uploadedFiles && uploadedFiles.length) {
+    body.uploaded_files = uploadedFiles
+  }
   const res = await fetch('/chat', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, session_id: sessionId }),
+    body: JSON.stringify(body),
     signal,
   })
 

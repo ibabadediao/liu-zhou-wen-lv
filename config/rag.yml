@@ -1,2 +1,2 @@
-chat_model_name: qwen3.8-max-0902
+chat_model_name: deepseek-v4.1-flash
 embedding_model_name: text-embedding-v4

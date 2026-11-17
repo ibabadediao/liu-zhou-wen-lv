@@ -3,6 +3,7 @@
 streamlit
 fastapi
 uvicorn[standard]
+python-multipart   # FastAPI UploadFile 需要
 pydantic
 langchain
 langchain-core
@@ -12,6 +13,8 @@ langchain-text-splitters
 langgraph
 dashscope
 pypdf
+python-docx        # Word 文档 (.docx) 解析
+Pillow             # 图片处理 (可选, 视觉模型直接 base64 也能工作)
 requests
 pyyaml
 pytest

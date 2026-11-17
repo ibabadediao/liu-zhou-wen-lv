@@ -84,6 +84,31 @@
               <div class="process-body">{{ m.process }}</div>
             </details>
             <div class="bubble">
+              <!-- 用户上传的文件列表 -->
+              <div v-if="m.uploadedFiles && m.uploadedFiles.length" class="msg-files">
+                <div
+                  v-for="(f, fi) in m.uploadedFiles"
+                  :key="fi"
+                  class="msg-file"
+                  :class="{ image: f.isImage }"
+                >
+                  <img
+                    v-if="f.isImage && f.persistUrl"
+                    :src="f.persistUrl"
+                    :alt="f.name"
+                  />
+                  <div v-else class="doc-thumb">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke-linecap="round" stroke-linejoin="round" />
+                      <polyline points="14 2 14 8 20 8" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </div>
+                  <div class="msg-file-meta">
+                    <strong>{{ f.name }}</strong>
+                    <span>{{ f.fileType }}</span>
+                  </div>
+                </div>
+              </div>
               <div v-if="m.role === 'assistant'" class="md" v-html="renderMarkdown(m.content)"></div>
               <p v-else class="plain">{{ m.content }}</p>
               <span v-if="m.streaming" class="caret"></span>
@@ -93,22 +118,60 @@
       </section>
 
       <footer class="composer">
+        <div v-if="pendingFiles.length" class="file-strip">
+          <div
+            v-for="(f, idx) in pendingFiles"
+            :key="idx"
+            class="file-chip"
+            :class="{ image: f.isImage, uploading: f.uploading }"
+          >
+            <div class="chip-thumb">
+              <img v-if="f.isImage && f.localUrl" :src="f.localUrl" alt="" />
+              <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke-linecap="round" stroke-linejoin="round" />
+                <polyline points="14 2 14 8 20 8" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span v-if="f.uploading" class="chip-spinner"></span>
+            </div>
+            <div class="chip-meta">
+              <span class="chip-name">{{ f.name }}</span>
+              <span class="chip-type">{{ f.uploading ? '上传中…' : (f.file_type || '已解析') }}</span>
+            </div>
+            <button v-if="!f.uploading" class="chip-del" @click="removePendingFile(idx)" title="移除">×</button>
+          </div>
+        </div>
+
         <div class="composer-box">
+          <input
+            ref="fileInput"
+            type="file"
+            multiple
+            hidden
+            accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+            @change="onPickFiles"
+          />
+          <button class="attach" type="button" @click="$refs.fileInput.click()" title="上传文件或图片" aria-label="上传文件">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
           <textarea
             ref="textarea"
             v-model="input"
             rows="1"
-            placeholder="问问柳州怎么玩、螺蛳粉哪家强…"
+            :placeholder="pendingFiles.length ? `已选 ${pendingFiles.length} 个文件，可选输入问题…` : '问问柳州怎么玩、螺蛳粉哪家强…'"
             @keydown.enter.exact.prevent="send()"
             @input="autoGrow"
+            @dragover.prevent
+            @drop.prevent="onDropFiles"
           ></textarea>
-          <button class="send" :disabled="sending || !input.trim()" @click="send()" aria-label="发送">
+          <button class="send" :disabled="sending || (!input.trim() && !pendingFiles.length)" @click="send()" aria-label="发送">
             <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 12h15M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </button>
         </div>
-        <p class="footnote">Enter 发送 · Shift + Enter 换行 · 会话仅自己可见</p>
+        <p class="footnote">Enter 发送 · Shift + Enter 换行 · 支持 PDF / Word / TXT / 图片（拖拽也可上传）</p>
       </footer>
 
       <transition name="fade">
@@ -121,9 +184,36 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { sessionApi, streamChat } from '../api'
+import { sessionApi, streamChat, uploadFile } from '../api'
 import { auth, logout } from '../store/auth'
 import { renderMarkdown } from '../utils/markdown'
+
+const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
+
+function isImageName(name) {
+  const lower = (name || '').toLowerCase()
+  return IMAGE_EXTS.some((e) => lower.endsWith(e))
+}
+
+/**
+ * 把任何来源的 uploadedFiles 统一成前端驼形命名:
+ * - 后端 DB 返回: 蛇形 is_image / file_type / relative_path
+ * - 前端 pendingFiles: 驼形 isImage / persistUrl
+ * 统一后: { name, fileType, isImage, persistUrl }
+ */
+function normalizeFiles(list) {
+  if (!list || !list.length) return list
+  return list.map((f) => {
+    const isImage = f.isImage ?? f.is_image ?? isImageName(f.name)
+    const persistUrl = f.persistUrl || (f.relative_path ? `/files/${f.relative_path}` : null)
+    return {
+      name: f.name,
+      fileType: f.file_type ?? f.fileType,
+      isImage,
+      persistUrl,
+    }
+  })
+}
 
 const router = useRouter()
 
@@ -136,6 +226,10 @@ const toast = ref('')
 const sidebarOpen = ref(false)
 const scroller = ref(null)
 const textarea = ref(null)
+const fileInput = ref(null)
+
+// 待发送的文件列表: 已上传到后端解析, 等用户点发送时一并提交
+const pendingFiles = ref([])
 
 let toastTimer = null
 
@@ -176,7 +270,11 @@ async function openSession(id) {
   sidebarOpen.value = false
   try {
     const data = await sessionApi.messages(id)
-    messages.value = data.map((m) => ({ ...m, process: '' }))
+    messages.value = data.map((m) => ({
+      ...m,
+      process: '',
+      uploadedFiles: normalizeFiles(m.uploadedFiles),
+    }))
     scrollToBottom()
   } catch (e) {
     if (e.status === 401) handleUnauthorized()
@@ -188,6 +286,7 @@ function newChat() {
   currentId.value = null
   messages.value = []
   input.value = ''
+  pendingFiles.value = []
   sidebarOpen.value = false
   nextTick(() => {
     if (textarea.value) {
@@ -195,6 +294,58 @@ function newChat() {
       textarea.value.focus()
     }
   })
+}
+
+// ============ 文件处理 ============
+
+function removePendingFile(idx) {
+  pendingFiles.value.splice(idx, 1)
+}
+
+async function _uploadOne(file) {
+  // 上传成功前用 blob URL 做即时预览 (上传完成后替换为后端持久化 URL)
+  const localUrl = isImageName(file.name) ? URL.createObjectURL(file) : null
+  const placeholder = {
+    name: file.name,
+    isImage: isImageName(file.name),
+    localUrl,                // blob 临时 URL (仅上传瞬间用)
+    persistUrl: null,        // 后端持久化 URL (上传成功后赋值, 刷新后仍可用)
+    uploading: true,
+  }
+  pendingFiles.value.push(placeholder)
+  const placeIdx = pendingFiles.value.length - 1
+
+  try {
+    const res = await uploadFile(file)
+    pendingFiles.value[placeIdx] = {
+      name: res.name,
+      file_type: res.file_type,
+      size: res.size,
+      isImage: res.is_image ?? placeholder.isImage,
+      localUrl,
+      persistUrl: res.relative_path ? `/files/${res.relative_path}` : null,
+      relative_path: res.relative_path,
+      preview: res.preview,
+      full_content: res.full_content,
+      uploading: false,
+    }
+  } catch (e) {
+    showToast(e.message || `上传失败: ${file.name}`)
+    pendingFiles.value.splice(placeIdx, 1)
+    if (localUrl) URL.revokeObjectURL(localUrl)
+  }
+}
+
+function onPickFiles(e) {
+  const files = Array.from(e.target.files || [])
+  files.forEach(_uploadOne)
+  // 清空 input, 让用户能连续选择同一个文件
+  e.target.value = ''
+}
+
+function onDropFiles(e) {
+  const files = Array.from(e.dataTransfer?.files || [])
+  files.forEach(_uploadOne)
 }
 
 async function removeSession(session) {
@@ -211,14 +362,46 @@ async function removeSession(session) {
 
 async function send(text) {
   const query = (typeof text === 'string' ? text : input.value).trim()
-  if (!query || sending.value) return
+  const filesReady = pendingFiles.value.filter((f) => !f.uploading)
+  const uploading = pendingFiles.value.some((f) => f.uploading)
+  if (!query && filesReady.length === 0) return
+  if (uploading) {
+    showToast('文件还在上传中，请稍等')
+    return
+  }
 
   input.value = ''
   nextTick(resetTextarea)
 
-  messages.value.push({ role: 'user', content: query })
+  // 构建给后端的 uploaded_files 参数 (带 relative_path, 供后端落库持久化)
+  const uploadedPayload = filesReady.map((f) => ({
+    name: f.name,
+    file_type: f.file_type,
+    is_image: f.isImage,
+    relative_path: f.relative_path,
+    full_content: f.full_content,
+  }))
+
+  // 用户消息里展示的文件 (normalizeFiles 统一命名, 刷新后后端返回的数据也能无缝展示)
+  const displayFiles = normalizeFiles(filesReady.map((f) => ({
+    name: f.name,
+    file_type: f.file_type,
+    is_image: f.isImage,
+    isImage: f.isImage,
+    relative_path: f.relative_path,
+    persistUrl: f.persistUrl,
+  })))
+
+  messages.value.push({
+    role: 'user',
+    content: query || '（查看上传的文件）',
+    uploadedFiles: displayFiles,
+  })
   messages.value.push({ role: 'assistant', content: '', process: '', streaming: true })
   const target = messages.value[messages.value.length - 1]
+
+  // 清空 pendingFiles, 但保留 localUrl 让用户消息能继续展示图片
+  pendingFiles.value = []
 
   sending.value = true
   scrollToBottom()
@@ -229,6 +412,7 @@ async function send(text) {
     await streamChat({
       query,
       sessionId: currentId.value,
+      uploadedFiles: uploadedPayload,
       onEvent(event, data) {
         if (event === 'session') {
           currentId.value = data.session_id
@@ -725,6 +909,72 @@ onMounted(async () => {
   white-space: pre-wrap;
 }
 
+.msg-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.msg-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 10px;
+  min-width: 0;
+  max-width: 220px;
+}
+
+.msg-file.image {
+  padding: 4px;
+  flex-direction: column;
+  align-items: stretch;
+  max-width: 160px;
+}
+
+.msg-file img {
+  max-width: 100%;
+  max-height: 120px;
+  border-radius: 7px;
+  object-fit: cover;
+  display: block;
+}
+
+.doc-thumb {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  color: #fff;
+  background: linear-gradient(135deg, rgba(255,255,255,0.25), rgba(255,255,255,0.1));
+}
+
+.msg-file-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+  color: #fff;
+}
+
+.msg-file-meta strong {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-file-meta span {
+  font-size: 10.5px;
+  opacity: 0.75;
+}
+
 .process {
   font-size: 12.5px;
   color: var(--muted);
@@ -755,13 +1005,108 @@ onMounted(async () => {
   padding: 12px 26px 18px;
 }
 
+.file-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 860px;
+  margin: 0 auto 8px;
+}
+
+.file-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 6px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  min-width: 0;
+  max-width: 260px;
+  box-shadow: var(--shadow-sm);
+  animation: rise 0.2s ease both;
+}
+
+.file-chip.uploading {
+  opacity: 0.7;
+}
+
+.chip-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  color: #0f8875;
+  background: linear-gradient(135deg, #e9f6f2, #cbebe1);
+  overflow: hidden;
+}
+
+.chip-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.chip-spinner {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 2px solid transparent;
+  border-top-color: #0f8875;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.chip-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.chip-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #08312b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-type {
+  font-size: 11px;
+  color: #9aaba5;
+}
+
+.chip-del {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #9aaba5;
+  font-size: 14px;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+
+.chip-del:hover {
+  color: #e85a7a;
+  background: #fde7ee;
+}
+
 .composer-box {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: 6px;
   max-width: 860px;
   margin: 0 auto;
-  padding: 10px 10px 10px 18px;
+  padding: 10px 10px 10px 14px;
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -772,6 +1117,22 @@ onMounted(async () => {
 .composer-box:focus-within {
   border-color: rgba(18, 144, 124, 0.5);
   box-shadow: 0 10px 34px rgba(14, 124, 107, 0.14);
+}
+
+.attach {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  color: #5c7a72;
+  transition: all 0.15s ease;
+}
+
+.attach:hover {
+  color: var(--teal-800);
+  background: #e9f6f2;
 }
 
 .composer-box textarea {
