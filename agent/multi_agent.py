@@ -1,4 +1,4 @@
-from typing import Annotated, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 from typing_extensions import TypedDict
 
 from pydantic import BaseModel
@@ -110,6 +110,27 @@ def _make_agent_node(agent, name: str) -> Callable:
     return node
 
 
+def _extract_text(content: Any) -> str:
+    """
+    从模型流式片段中提取可展示文本:
+    - 纯文本: 原样返回
+    - 结构化内容块(部分模型返回 [{"type": "text", "text": "..."}]): 拼接文本块, 忽略图片等非文本块
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") in (None, "text"):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 class MultiAgentService:
     """意图路由 + 四子智能体编排:
     START -> router -> (tour_agent | food_agent | itinerary_agent | chitchat_agent) -> END
@@ -213,7 +234,7 @@ class MultiAgentService:
             if not ns:
                 continue
 
-            text = chunk.content if isinstance(chunk.content, str) else ""
+            text = _extract_text(chunk.content)
             if not text:
                 continue
 
