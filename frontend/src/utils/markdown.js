@@ -9,5 +9,7 @@ marked.setOptions({ gfm: true, breaks: true })
  */
 export function renderMarkdown(text) {
   if (!text) return ''
-  return DOMPurify.sanitize(marked.parse(text))
+  // 转义数字之间的 ~ (如温度区间 15~19), 防止 marked GFM 下标语法吞掉波浪号
+  const escaped = text.replace(/(\d)~(\d)/g, '$1\\~$2')
+  return DOMPurify.sanitize(marked.parse(escaped))
 }
