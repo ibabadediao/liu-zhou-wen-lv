@@ -3,7 +3,7 @@ from typing_extensions import TypedDict
 
 from pydantic import BaseModel
 from langchain.agents import create_agent
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AnyMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
@@ -220,6 +220,10 @@ class MultiAgentService:
         :param query: 当前用户输入
         :param history: 当前会话的历史消息列表, 格式 [{"role": "user"/"assistant", "content": xxx}, ...]
         :param file_context: 用户上传文件解析后的文本内容, 会作为额外上下文拼进 user message
+        :return: (kind, text) 二元组流
+                 kind="answer"   最终回答正文
+                 kind="thinking" 思考过程(模型前置规划 / 工具返回)
+                 kind="demote"  修正帧: 之前误作为回答发出的文本其实是思考, 前端需收回
         """
         # 把文件上下文拼进当前 user message, 让模型在回答时能看到
         if file_context:
@@ -237,9 +241,11 @@ class MultiAgentService:
         logger.info(f"[multi_agent]发送模型{len(messages)}条消息, 首条: [{messages[0]['role']}]")
 
         # stream_mode="messages": 逐 token 透传子Agent内部模型的生成片段
-        # (旧的 values 模式只在每个节点跑完后发一次完整快照, 最终回答会整块出现)
         # subgraphs=True: 否则子Agent整个节点跑完才有一次输出
-        current_id = None
+        current_id = None      # 当前模型消息ID, 用于识别"换了一条消息"
+        answer_buf: list[str] = []   # 当前消息已作为"回答"发出的文本
+        thinking = False       # 当前消息是否已判定为"思考"(即会发起工具调用)
+
         for ns, (chunk, _metadata) in self.graph.stream(
             {"messages": messages}, stream_mode="messages", subgraphs=True
         ):
@@ -247,16 +253,42 @@ class MultiAgentService:
             if not ns:
                 continue
 
-            text = _extract_text(chunk.content)
-            if not text:
+            # 工具返回的是"思考素材", 归入思考过程而非最终回答
+            if isinstance(chunk, ToolMessage):
+                current_id = None
+                thinking = False
+                answer_buf = []
+                text = _extract_text(chunk.content)
+                if text:
+                    yield ("thinking", f"\n【工具返回】{text}\n")
                 continue
 
+            text = _extract_text(chunk.content)
             msg_id = getattr(chunk, "id", None)
-            # 新一条模型消息开始(如工具调用后的最终回答): 换行与上一段隔开
-            if current_id is not None and msg_id != current_id:
-                yield "\n"
-            current_id = msg_id
-            yield text
+
+            # 新一条模型消息开始: 重置当前消息状态
+            if msg_id != current_id:
+                current_id = msg_id
+                answer_buf = []
+                thinking = False
+
+            if text:
+                if thinking:
+                    yield ("thinking", text)
+                else:
+                    answer_buf.append(text)
+                    yield ("answer", text)
+
+            # 该消息发起了工具调用 => 它此前输出的文本其实是规划思考,
+            # 先发 demote 让前端把这部分从回答区收回折叠区
+            has_tool = bool(getattr(chunk, "tool_call_chunks", None)) or bool(
+                getattr(chunk, "tool_calls", None)
+            )
+            if has_tool and not thinking:
+                thinking = True
+                if answer_buf:
+                    yield ("demote", "".join(answer_buf))
+                    answer_buf = []
 
 
 if __name__ == '__main__':
@@ -264,5 +296,6 @@ if __name__ == '__main__':
 
     for question in ["柳州有哪些必去的景点", "推荐几家正宗的螺蛳粉店", "帮我规划一个柳州两日游", "今天天气怎么样"]:
         print(f"\n{'=' * 20} 用户: {question} {'=' * 20}")
-        for chunk in service.execute_stream(question):
-            print(chunk, end="", flush=True)
+        for kind, chunk in service.execute_stream(question):
+            tag = {"answer": "回答", "thinking": "思考", "demote": "收回"}[kind]
+            print(f"[{tag}] {chunk}", end="", flush=True)

@@ -42,6 +42,35 @@ export const sessionApi = {
   remove: (id) => request(`/sessions/${id}`, { method: 'DELETE' }),
 }
 
+export const kbApi = {
+  list: () => request('/admin/kb/documents'),
+  remove: (name) =>
+    request(`/admin/kb/documents/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+}
+
+/**
+ * 管理员上传知识库文档(txt/pdf), 后端自动向量化入库
+ */
+export async function uploadKbDocument(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const res = await fetch('/admin/kb/documents', {
+    method: 'POST',
+    credentials: 'include',
+    body: fd,
+  })
+  if (res.status === 401) {
+    const err = new Error('未登录或登录已过期')
+    err.status = 401
+    throw err
+  }
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.detail || `上传失败(${res.status})`)
+  }
+  return data
+}
+
 /**
  * 文件上传: multipart/form-data, 后端保存 + 解析后返回预览和全文
  */

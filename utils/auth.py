@@ -12,7 +12,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import Cookie, HTTPException, Response
+from fastapi import Cookie, Depends, HTTPException, Response
 
 from utils.config_handler import agent_config
 from utils.path_tool import get_abs_path
@@ -43,9 +43,14 @@ def _init_db():
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
                     username      TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
+                    is_admin      INTEGER NOT NULL DEFAULT 0,
                     created_at    TEXT NOT NULL
                 )
             """)
+            # 旧库迁移: 已有 users 表补 is_admin 列, 存量用户默认为普通用户
+            columns = [row["name"] for row in conn.execute("PRAGMA table_info(users)")]
+            if "is_admin" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
     finally:
         conn.close()
 
@@ -96,12 +101,13 @@ def _load_secret() -> str:
 SECRET_KEY = _load_secret()
 
 
-def create_user(username: str, password: str) -> dict:
+def create_user(username: str, password: str, is_admin: bool = False) -> dict:
     """
     注册新用户
     :param username: 用户名(3-32位)
     :param password: 明文密码(6-64位)
-    :return: 用户信息 {"id", "username"}
+    :param is_admin: 是否管理员(默认否)
+    :return: 用户信息 {"id", "username", "is_admin"}
     :raises ValueError: 用户名/密码不合法或用户名已存在
     """
     username = (username or "").strip()
@@ -114,10 +120,11 @@ def create_user(username: str, password: str) -> dict:
     try:
         with conn:
             cursor = conn.execute(
-                "INSERT INTO users(username, password_hash, created_at) VALUES (?, ?, ?)",
-                (username, _hash_password(password), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                "INSERT INTO users(username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)",
+                (username, _hash_password(password), 1 if is_admin else 0,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
-        return {"id": cursor.lastrowid, "username": username}
+        return {"id": cursor.lastrowid, "username": username, "is_admin": is_admin}
     except sqlite3.IntegrityError:
         raise ValueError("用户名已被注册")
     finally:
@@ -132,14 +139,14 @@ def authenticate(username: str, password: str) -> dict | None:
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT id, username, password_hash FROM users WHERE username = ?",
+            "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
             ((username or "").strip(),),
         ).fetchone()
     finally:
         conn.close()
 
     if row and _verify_password(password or "", row["password_hash"]):
-        return {"id": row["id"], "username": row["username"]}
+        return {"id": row["id"], "username": row["username"], "is_admin": bool(row["is_admin"])}
     return None
 
 
@@ -147,7 +154,7 @@ def get_user_by_id(user_id: int) -> dict | None:
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT id, username FROM users WHERE id = ?", (user_id,)
+            "SELECT id, username, is_admin FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         return dict(row) if row else None
     finally:
@@ -209,14 +216,27 @@ def get_current_user(lz_token: str | None = Cookie(default=None)) -> dict:
     return user
 
 
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """FastAPI 依赖: 要求当前用户为管理员, 否则 403"""
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
+
+
 def ensure_default_admin():
-    """首次启动创建管理员账号, 已存在则跳过"""
+    """首次启动创建管理员账号, 已存在则确保其为管理员"""
     username = os.environ.get("ADMIN_USERNAME", "admin")
     password = os.environ.get("ADMIN_PASSWORD") or agent_config.get("admin_password") or "admin123"
     try:
-        create_user(username, password)
+        create_user(username, password, is_admin=True)
     except ValueError:
-        pass   # 已存在, 无需处理
+        # 账号已存在(可能是旧库遗留的普通 admin): 补标记为管理员
+        conn = _connect()
+        try:
+            with conn:
+                conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (username,))
+        finally:
+            conn.close()
 
 
 _init_db()

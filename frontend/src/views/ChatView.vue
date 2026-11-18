@@ -16,6 +16,14 @@
         新对话
       </button>
 
+      <button v-if="auth.user?.is_admin" class="admin-entry" @click="router.push('/admin')">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z" />
+        </svg>
+        知识库管理
+      </button>
+
       <p class="side-label">历史对话</p>
 
       <nav class="sessions">
@@ -80,7 +88,7 @@
           <div class="msg-avatar">{{ m.role === 'user' ? initial : '柳' }}</div>
           <div class="bubble-wrap">
             <details v-if="m.process" class="process">
-              <summary>思考过程</summary>
+              <summary>思考过程<span v-if="m.streaming && !m.content" class="thinking-live"> · 思考中…</span></summary>
               <div class="process-body">{{ m.process }}</div>
             </details>
             <div class="bubble">
@@ -272,7 +280,7 @@ async function openSession(id) {
     const data = await sessionApi.messages(id)
     messages.value = data.map((m) => ({
       ...m,
-      process: '',
+      process: m.process || '',
       uploadedFiles: normalizeFiles(m.uploadedFiles),
     }))
     scrollToBottom()
@@ -417,16 +425,26 @@ async function send(text) {
         if (event === 'session') {
           currentId.value = data.session_id
         } else if (event === 'chunk') {
-          raw += data.text
-          target.content = raw
+          // kind: answer=最终回答正文 / thinking=思考过程 / demote=误发进回答的思考收回
+          const kind = data.kind || 'answer'
+          if (kind === 'thinking') {
+            target.process = (target.process || '') + data.text
+          } else if (kind === 'demote') {
+            target.process = (target.process || '') + data.text
+            target.content = ''
+            raw = ''
+          } else {
+            target.content = (target.content || '') + data.text
+            raw += data.text
+          }
           scrollToBottom()
         } else if (event === 'error') {
           showToast(data.message || '智能体执行出错')
         } else if (event === 'end') {
           const answer = data.answer || ''
-          const idx = answer ? raw.lastIndexOf(answer) : -1
-          if (idx > 0) target.process = raw.slice(0, idx).trim()
           target.content = answer || raw
+          // 后端下发的权威思考过程, 覆盖前端累积值, 避免流式期间的偏差
+          if (data.process !== undefined) target.process = data.process
           target.streaming = false
           scrollToBottom()
         }
@@ -555,6 +573,28 @@ onMounted(async () => {
 .new-chat:hover {
   transform: translateY(-1px);
   filter: brightness(1.04);
+}
+
+.admin-entry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 0;
+  border-radius: 11px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: rgba(231, 245, 240, 0.85);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.admin-entry:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
 }
 
 .side-label {
@@ -989,6 +1029,17 @@ onMounted(async () => {
   user-select: none;
   font-weight: 600;
   color: #5c7a72;
+}
+
+.thinking-live {
+  font-weight: 400;
+  color: #12a08b;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }
 
 .process-body {

@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent.multi_agent import MultiAgentService
+from rag.kb_manager import KnowledgeBaseManager
 from utils import auth
 from utils.chat_history import (
     add_message,
@@ -50,6 +51,9 @@ service = MultiAgentService()
 # (进程内缓存, 重启后自动重建, 不影响正确性——最多多做一次压缩)
 summary_caches: dict[int, dict] = {}
 
+# 知识库管理服务: 复用 RAG 的向量库单例, 供管理员接口增删查文档
+kb_manager = KnowledgeBaseManager()
+
 
 class ChatRequest(BaseModel):
     query: str
@@ -76,7 +80,7 @@ def _sse(event: str, data: dict) -> str:
 
 def _public_user(user: dict) -> dict:
     """只向前端暴露必要字段, 不返回密码哈希等敏感信息"""
-    return {"id": user["id"], "username": user["username"]}
+    return {"id": user["id"], "username": user["username"], "is_admin": bool(user.get("is_admin"))}
 
 
 def _assert_owned_session(session_id: int, user: dict) -> dict:
@@ -254,28 +258,39 @@ def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
             first_frame["uploaded_names"] = [f.get("name") for f in req.uploaded_files]
         yield _sse("session", first_frame)
 
-        parts: list[str] = []
+        process_parts: list[str] = []   # 思考过程(前置规划 + 工具返回), 折叠展示
+        answer_parts: list[str] = []    # 最终回答正文
         try:
-            for chunk in service.execute_stream(query, history, file_context=file_context):
-                parts.append(chunk)
-                yield _sse("chunk", {"text": chunk})
+            stream = service.execute_stream(query, history, file_context=file_context)
+            for kind, text in stream:
+                if kind == "thinking":
+                    process_parts.append(text)
+                elif kind == "demote":
+                    # 修正帧: 该文本先前误发进回答区, 现收回思考过程
+                    process_parts.append(text)
+                    answer_parts = []
+                else:
+                    answer_parts.append(text)
+                yield _sse("chunk", {"text": text, "kind": kind})
         except Exception as e:
             # 网络瞬断/模型超时等: 已有片段仍落库 + 正常发 end, 前端至少能看到已生成的内容
             logger.error(f"[chat]对话执行中断: {e}", exc_info=True)
-            partial = "".join(parts).strip()
+            partial = "".join(answer_parts).strip()
+            process_text = "".join(process_parts).strip()
             if partial:
-                add_message(session_id, "assistant", partial)
-                yield _sse("end", {"answer": partial})
+                add_message(session_id, "assistant", partial, process=process_text)
+                yield _sse("end", {"answer": partial, "process": process_text})
             else:
-                yield _sse("end", {"answer": ""})
+                yield _sse("end", {"answer": "", "process": process_text})
             yield _sse("error", {"message": "回答尚未完成，请稍后再问一次"})
             return
 
-        # 逐token流式下回答由所有片段拼接而成, 落库供下轮作为历史
-        answer = "".join(parts).strip()
+        # 逐token流式下最终回答由 answer 片段拼接而成, 落库供下轮作为历史
+        answer = "".join(answer_parts).strip()
+        process_text = "".join(process_parts).strip()
         if answer:
-            add_message(session_id, "assistant", answer)
-        yield _sse("end", {"answer": answer})
+            add_message(session_id, "assistant", answer, process=process_text)
+        yield _sse("end", {"answer": answer, "process": process_text})
 
     return StreamingResponse(
         event_stream(),
@@ -331,6 +346,40 @@ def serve_uploaded_file(file_path: str, user: dict = Depends(auth.get_current_us
         raise HTTPException(status_code=403, detail="无权访问此文件")
 
     return FileResponse(target)
+
+
+# ============ 知识库管理接口 (仅管理员) ============
+
+@app.get("/admin/kb/documents")
+def admin_list_documents(user: dict = Depends(auth.require_admin)):
+    """列出知识库文档及入库状态"""
+    return kb_manager.list_documents()
+
+
+@app.post("/admin/kb/documents")
+async def admin_add_document(
+    file: UploadFile = File(...),
+    user: dict = Depends(auth.require_admin),
+):
+    """上传并入库一个知识库文档(txt/pdf)"""
+    filename = file.filename or "unnamed"
+    content = await file.read()
+    if len(content) > 30 * 1024 * 1024:   # 30MB 上限
+        raise HTTPException(status_code=400, detail="文件过大, 限制 30MB")
+
+    try:
+        return kb_manager.add_document(filename, content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/admin/kb/documents/{name}")
+def admin_delete_document(name: str, user: dict = Depends(auth.require_admin)):
+    """删除知识库文档(源文件 + 向量 + 去重记录)"""
+    try:
+        return kb_manager.delete_document(name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="文档不存在")
 
 
 # ============ 前端静态资源(构建产物存在时同源托管) ============

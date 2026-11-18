@@ -68,6 +68,11 @@ def _init_db():
             if "files_json" not in msg_columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN files_json TEXT")
                 logger.info("[chat_history]messages 表已迁移: 新增 files_json 列")
+
+            # 旧库迁移: 消息表增加 process 列, 用于持久化思考过程(前端折叠展示, 刷新后仍可见)
+            if "process" not in msg_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN process TEXT")
+                logger.info("[chat_history]messages 表已迁移: 新增 process 列")
     finally:
         conn.close()
 
@@ -144,7 +149,7 @@ def get_messages(session_id: int) -> list[dict]:
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT role, content, files_json FROM messages WHERE session_id = ? ORDER BY id",
+            "SELECT role, content, files_json, process FROM messages WHERE session_id = ? ORDER BY id",
             (session_id,)
         ).fetchall()
         result = []
@@ -155,13 +160,15 @@ def get_messages(session_id: int) -> list[dict]:
                     msg["uploadedFiles"] = _json.loads(row["files_json"])
                 except Exception:
                     pass
+            if row["process"]:
+                msg["process"] = row["process"]
             result.append(msg)
         return result
     finally:
         conn.close()
 
 
-def add_message(session_id: int, role: str, content: str, files_json: str | None = None):
+def add_message(session_id: int, role: str, content: str, files_json: str | None = None, process: str | None = None):
     """
     向指定会话追加一条消息, 同时刷新会话的更新时间;
     若会话还是默认标题且写入的是用户消息, 则自动用消息内容生成会话标题
@@ -169,13 +176,14 @@ def add_message(session_id: int, role: str, content: str, files_json: str | None
     :param role: 角色, user 或 assistant
     :param content: 消息内容
     :param files_json: 上传文件元信息的 JSON 字符串(仅用户消息可能有)
+    :param process: 思考过程文本(仅助手消息可能有, 前端折叠展示)
     """
     conn = _connect()
     try:
         with conn:
             conn.execute(
-                "INSERT INTO messages(session_id, role, content, files_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, files_json, _now())
+                "INSERT INTO messages(session_id, role, content, files_json, process, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, role, content, files_json, process, _now())
             )
 
             # 首条用户消息自动生成会话标题

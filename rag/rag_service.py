@@ -3,7 +3,7 @@ from collections import OrderedDict
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 
-from rag.vector_store import VectorStoreService
+from rag.vector_store import get_vector_store_service
 from utils.prompt_loader import load_rag_prompt
 from langchain_core.prompts import PromptTemplate
 from model.factory import chat_model
@@ -24,7 +24,7 @@ QUERY_CACHE_SIZE = 64           # 最近 64 个 query 的检索结果缓存, 省
 
 class RagSummarizeService(object):
     def __init__(self):
-        self.vector_store = VectorStoreService()
+        self.vector_store = get_vector_store_service()
         self.retriever = self.vector_store.get_retriever()
         self.prompt_text = load_rag_prompt()
         self.prompt_template = PromptTemplate.from_template(self.prompt_text)

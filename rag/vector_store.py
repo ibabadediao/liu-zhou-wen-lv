@@ -32,6 +32,89 @@ class VectorStoreService:
     def get_retriever(self):
             return self.vector_store.as_retriever(search_kwargs={'k': chroma_config["k"]})
 
+    # ============ 知识库管理: 单文件入库 / 删除 / 查询 ============
+
+    def _file_documents(self, path: str) -> list[Document]:
+        """按扩展名读取单个知识库文件为 Document 列表"""
+        if path.lower().endswith("txt"):
+            return text_loader(path)
+        if path.lower().endswith("pdf"):
+            return pdf_loader(path)
+        return []
+
+    def _md5_path(self) -> str:
+        return get_abs_path(chroma_config["md5_hex_store"])
+
+    def _md5_exists(self, md5_hex: str) -> bool:
+        md5_path = self._md5_path()
+        if not os.path.exists(md5_path):
+            return False
+        with open(md5_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip() == md5_hex:
+                    return True
+        return False
+
+    def _md5_add(self, md5_hex: str):
+        with open(self._md5_path(), "a", encoding="utf-8") as f:
+            f.write(md5_hex + "\n")
+
+    def _md5_remove(self, md5_hex: str):
+        md5_path = self._md5_path()
+        if not os.path.exists(md5_path):
+            return
+        with open(md5_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        with open(md5_path, "w", encoding="utf-8") as f:
+            for line in lines:
+                if line.strip() != md5_hex:
+                    f.write(line)
+
+    def is_ingested(self, path: str) -> bool:
+        """判断文件是否已入库(依据 md5.txt 去重清单)"""
+        md5_hex = get_file_md5_hex(path)
+        return bool(md5_hex) and self._md5_exists(md5_hex)
+
+    def add_file(self, path: str) -> int:
+        """切分并向量化单个知识库文件, 返回写入的文本块数(已入库/空内容返回0)"""
+        md5_hex = get_file_md5_hex(path)
+        if not md5_hex or self._md5_exists(md5_hex):
+            return 0
+
+        documents = self._file_documents(path)
+        if not documents:
+            return 0
+
+        chunks = self.spliter.split_documents(documents)
+        if not chunks:
+            return 0
+
+        self.vector_store.add_documents(chunks)
+        self._md5_add(md5_hex)
+        logger.info(f"[知识库管理]文件{path}已入库, 共{len(chunks)}个文本块")
+        return len(chunks)
+
+    def delete_file(self, path: str):
+        """按 source 元数据删除该文件全部向量块, 并清理 md5 去重记录"""
+        md5_hex = get_file_md5_hex(path)
+        try:
+            ids = self.vector_store.get(where={"source": path}).get("ids", [])
+            if ids:
+                self.vector_store.delete(ids=ids)
+                logger.info(f"[知识库管理]文件{path}已删除 {len(ids)} 个向量块")
+        except Exception as e:
+            logger.error(f"[知识库管理]删除向量失败 {path}: {e}")
+        if md5_hex:
+            self._md5_remove(md5_hex)
+
+    def get_chunk_count(self, path: str) -> int:
+        """统计某 source 文件在向量库中的文本块数"""
+        try:
+            res = self.vector_store.get(where={"source": path}, include=["metadatas"])
+            return len(res.get("ids", []))
+        except Exception:
+            return 0
+
     def load_document(self):
             """
             1.从数据文件夹内读取数据文件，转为向量存入向量数据库
@@ -124,6 +207,18 @@ class VectorStoreService:
                     # exc_info=True 用于记录详细的异常堆栈信息，如果为False，则只记录错误信息，不记录堆栈信息
                     logger.error(f"[加载知识库]文件{path}加载失败，错误信息：{str(e)}", exc_info=True)   # 加载失败，记录错误信息
                     continue # 跳过当前文件，继续处理下一个文件
+
+# 全局唯一向量库服务实例: 供 RAG 检索与知识库管理共享,
+# 保证管理员增删文档后检索即时生效(避免多个 Chroma 连接各自持有过期索引)
+_vector_store_service: VectorStoreService | None = None
+
+
+def get_vector_store_service() -> VectorStoreService:
+    global _vector_store_service
+    if _vector_store_service is None:
+        _vector_store_service = VectorStoreService()
+    return _vector_store_service
+
 
 if __name__ == '__main__':
     vs = VectorStoreService()
