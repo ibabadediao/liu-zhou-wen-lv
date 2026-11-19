@@ -107,6 +107,11 @@ class VectorStoreService:
         if md5_hex:
             self._md5_remove(md5_hex)
 
+    def reingest_file(self, path: str) -> int:
+        """重新入库: 先清掉该文件已有向量与 md5 记录, 再重新切分入库"""
+        self.delete_file(path)
+        return self.add_file(path)
+
     def get_chunk_count(self, path: str) -> int:
         """统计某 source 文件在向量库中的文本块数"""
         try:

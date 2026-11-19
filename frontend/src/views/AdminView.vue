@@ -37,8 +37,18 @@
 
       <section class="list-card">
         <div class="list-head">
-          <h2>已入库文档</h2>
-          <span class="hint">删除会同时移除源文件与向量数据</span>
+          <div>
+            <h2>知识库文档</h2>
+            <span class="hint">删除会同时移除源文件与向量数据</span>
+          </div>
+          <button
+            class="batch-btn"
+            :disabled="pendingCount === 0 || batchBusy"
+            @click="ingestAllPending"
+          >
+            <span v-if="!batchBusy">批量入库{{ pendingCount ? `（${pendingCount}）` : '' }}</span>
+            <span v-else class="mini-spinner dark"></span>
+          </button>
         </div>
 
         <div v-if="loading" class="empty">加载中…</div>
@@ -58,6 +68,18 @@
             <span class="badge" :class="{ ok: d.ingested }">
               {{ d.ingested ? '已入库' : '未入库' }}
             </span>
+            <button
+              class="re"
+              :disabled="busyName === d.name"
+              :title="d.ingested ? '重新入库' : '入库'"
+              @click="reingest(d)"
+            >
+              <span v-if="busyName === d.name" class="mini-spinner dark"></span>
+              <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 11a8 8 0 1 0-2.3 6" stroke-linecap="round" />
+                <path d="M20 5v6h-6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
             <button class="del" @click="removeDoc(d)" title="删除文档">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13" stroke-linecap="round" stroke-linejoin="round" />
@@ -75,7 +97,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { kbApi, uploadKbDocument } from '../api'
 
@@ -87,6 +109,11 @@ const uploading = ref(false)
 const picked = ref(null)
 const toast = ref('')
 const fileInput = ref(null)
+const batchBusy = ref(false)
+const busyName = ref('')
+
+// 未入库文档数量: 决定「批量入库」按钮是否可用
+const pendingCount = computed(() => documents.value.filter((d) => !d.ingested).length)
 
 let toastTimer = null
 
@@ -150,6 +177,40 @@ async function removeDoc(doc) {
       return
     }
     showToast(e.message || '删除失败')
+  }
+}
+
+async function reingest(doc) {
+  busyName.value = doc.name
+  try {
+    const res = await kbApi.reingest(doc.name)
+    showToast(res.ingested ? `「${res.name}」已入库（${res.chunks} 个文本块）` : `「${res.name}」内容为空，未入库`)
+    await refresh()
+  } catch (e) {
+    if (e.status === 401) {
+      router.replace({ name: 'login' })
+      return
+    }
+    showToast(e.message || '入库失败')
+  } finally {
+    busyName.value = ''
+  }
+}
+
+async function ingestAllPending() {
+  batchBusy.value = true
+  try {
+    const res = await kbApi.ingestPending()
+    showToast(res.count ? `已批量入库 ${res.count} 个文档` : '没有待入库的文档')
+    await refresh()
+  } catch (e) {
+    if (e.status === 401) {
+      router.replace({ name: 'login' })
+      return
+    }
+    showToast(e.message || '批量入库失败')
+  } finally {
+    batchBusy.value = false
   }
 }
 
@@ -274,6 +335,11 @@ onMounted(refresh)
   animation: spin 0.7s linear infinite;
 }
 
+.mini-spinner.dark {
+  border-color: rgba(14, 124, 107, 0.25);
+  border-top-color: var(--teal-700);
+}
+
 .picked {
   margin: 14px 0 0;
   font-size: 13px;
@@ -282,7 +348,7 @@ onMounted(refresh)
 
 .list-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
@@ -291,6 +357,26 @@ onMounted(refresh)
 .list-head .hint {
   font-size: 12px;
   color: #9aaba5;
+}
+
+.batch-btn {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--teal-700);
+  background: var(--teal-100);
+  transition: background 0.15s ease;
+}
+
+.batch-btn:hover:not(:disabled) {
+  background: #d9f0e9;
+}
+
+.batch-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .empty {
@@ -372,6 +458,26 @@ onMounted(refresh)
 .badge.ok {
   color: var(--teal-700);
   background: var(--teal-100);
+}
+
+.re {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  color: #9aaba5;
+  transition: all 0.15s ease;
+}
+
+.re:hover:not(:disabled) {
+  color: var(--teal-700);
+  background: var(--teal-100);
+}
+
+.re:disabled {
+  cursor: not-allowed;
 }
 
 .del {

@@ -373,6 +373,21 @@ async def admin_add_document(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/admin/kb/documents/ingest-pending")
+def admin_ingest_pending(user: dict = Depends(auth.require_admin)):
+    """批量入库 data/ 下所有尚未入库的文档"""
+    return kb_manager.ingest_pending()
+
+
+@app.post("/admin/kb/documents/{name}/ingest")
+def admin_reingest_document(name: str, user: dict = Depends(auth.require_admin)):
+    """重新入库单个文档: 清掉旧向量后按当前内容重新切分"""
+    try:
+        return kb_manager.reingest_document(name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+
 @app.delete("/admin/kb/documents/{name}")
 def admin_delete_document(name: str, user: dict = Depends(auth.require_admin)):
     """删除知识库文档(源文件 + 向量 + 去重记录)"""

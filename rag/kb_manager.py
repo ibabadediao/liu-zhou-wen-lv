@@ -56,14 +56,32 @@ class KnowledgeBaseManager:
         chunks = self.vs.add_file(dest)
         return {"name": safe_name, "ingested": chunks > 0, "chunks": chunks}
 
-    def delete_document(self, name: str) -> dict:
-        """删除文档(源文件 + 向量 + 去重记录), 不存在时抛 FileNotFoundError"""
+    def _resolve(self, name: str) -> str:
+        """把文档名解析为 data/ 内的绝对路径, 防路径穿越; 不存在时抛 FileNotFoundError"""
         data_abs = os.path.abspath(self.data_dir)
-        target = os.path.abspath(os.path.join(self.data_dir, name))
-        # 防路径穿越: 目标必须落在 data/ 目录内
+        target = os.path.abspath(os.path.join(self.data_dir, os.path.basename(name)))
         if not target.startswith(data_abs + os.sep) or not os.path.isfile(target):
             raise FileNotFoundError(name)
+        return target
 
+    def delete_document(self, name: str) -> dict:
+        """删除文档(源文件 + 向量 + 去重记录), 不存在时抛 FileNotFoundError"""
+        target = self._resolve(name)
         self.vs.delete_file(target)
         os.remove(target)
-        return {"deleted": name}
+        return {"deleted": os.path.basename(name)}
+
+    def reingest_document(self, name: str) -> dict:
+        """重新入库单个文档: 清掉旧向量后按当前内容重新切分入库"""
+        target = self._resolve(name)
+        chunks = self.vs.reingest_file(target)
+        return {"name": os.path.basename(name), "ingested": chunks > 0, "chunks": chunks}
+
+    def ingest_pending(self) -> dict:
+        """批量入库 data/ 下所有尚未入库的文档"""
+        pending = [d["name"] for d in self.list_documents() if not d["ingested"]]
+        results = []
+        for name in pending:
+            chunks = self.vs.add_file(self._resolve(name))
+            results.append({"name": name, "ingested": chunks > 0, "chunks": chunks})
+        return {"count": len(results), "documents": results}

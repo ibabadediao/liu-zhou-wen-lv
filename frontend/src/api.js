@@ -46,6 +46,9 @@ export const kbApi = {
   list: () => request('/admin/kb/documents'),
   remove: (name) =>
     request(`/admin/kb/documents/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  reingest: (name) =>
+    request(`/admin/kb/documents/${encodeURIComponent(name)}/ingest`, { method: 'POST' }),
+  ingestPending: () => request('/admin/kb/documents/ingest-pending', { method: 'POST' }),
 }
 
 /**
