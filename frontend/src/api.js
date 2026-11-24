@@ -51,6 +51,19 @@ export const kbApi = {
   ingestPending: () => request('/admin/kb/documents/ingest-pending', { method: 'POST' }),
 }
 
+export const userApi = {
+  list: () => request('/admin/users'),
+  create: (username, password, isAdmin) =>
+    request('/admin/users', { method: 'POST', body: { username, password, is_admin: isAdmin } }),
+  resetPassword: (id, password) =>
+    request(`/admin/users/${id}/password`, { method: 'POST', body: { password } }),
+  setAdmin: (id, isAdmin) =>
+    request(`/admin/users/${id}/admin`, { method: 'POST', body: { is_admin: isAdmin } }),
+  remove: (id) => request(`/admin/users/${id}`, { method: 'DELETE' }),
+  sessions: (id) => request(`/admin/users/${id}/sessions`),
+  messages: (sessionId) => request(`/admin/sessions/${sessionId}/messages`),
+}
+
 /**
  * 管理员上传知识库文档(txt/pdf), 后端自动向量化入库
  */

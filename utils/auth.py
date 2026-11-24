@@ -161,6 +161,68 @@ def get_user_by_id(user_id: int) -> dict | None:
         conn.close()
 
 
+def list_users() -> list[dict]:
+    """列出全部用户(不含密码哈希), 供管理后台展示"""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "username": row["username"],
+                "is_admin": bool(row["is_admin"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def set_password(user_id: int, password: str) -> bool:
+    """重置密码, 用户不存在返回 False"""
+    if not 6 <= len(password or "") <= 64:
+        raise ValueError("密码长度需为 6-64 位")
+
+    conn = _connect()
+    try:
+        with conn:
+            cursor = conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (_hash_password(password), user_id),
+            )
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def set_admin(user_id: int, is_admin: bool) -> bool:
+    """设置/取消管理员身份, 用户不存在返回 False"""
+    conn = _connect()
+    try:
+        with conn:
+            cursor = conn.execute(
+                "UPDATE users SET is_admin = ? WHERE id = ?",
+                (1 if is_admin else 0, user_id),
+            )
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_user(user_id: int) -> bool:
+    """删除用户, 用户不存在返回 False"""
+    conn = _connect()
+    try:
+        with conn:
+            cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def issue_token(user: dict) -> str:
     """签发 JWT, sub 存用户ID, 过期时间 TOKEN_TTL"""
     now = datetime.now(timezone.utc)

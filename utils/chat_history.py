@@ -221,6 +221,24 @@ def delete_session(session_id: int):
         conn.close()
 
 
+def delete_user_sessions(user_id: int) -> int:
+    """
+    删除某用户的全部会话及其消息(删除用户时调用, 避免残留孤儿数据)
+    :return: 删除的会话数
+    """
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute(
+                "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?)",
+                (user_id,),
+            )
+            cursor = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 # 模块导入时初始化数据库
 _init_db()
 

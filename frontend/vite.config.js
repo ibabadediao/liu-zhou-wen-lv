@@ -5,10 +5,17 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: {
+    host: true,
     port: 5173,
+    // 允许 cpolar 等内网穿透域名访问（前导点表示匹配所有子域名）
+    allowedHosts: ['.cpolar.top'],
     proxy: {
-      // 一条正则合并所有后端前缀(以 ^ 开头表示按正则匹配), 前端页面/资源仍由 Vite 自己处理
-      '^(/auth|/chat|/sessions|/health|/admin|/files)': 'http://localhost:8000',
+      '/auth': 'http://localhost:8000',
+      '/chat': 'http://localhost:8000',
+      '/sessions': 'http://localhost:8000',
+      '/health': 'http://localhost:8000',
+      '/admin': 'http://localhost:8000',
+      '/files': 'http://localhost:8000',
     },
   },
 })

@@ -24,6 +24,7 @@ from utils.chat_history import (
     add_message,
     create_session,
     delete_session,
+    delete_user_sessions,
     get_messages,
     get_session,
     list_sessions,
@@ -71,6 +72,20 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=6, max_length=64)
+    is_admin: bool = False
+
+
+class ResetPasswordRequest(BaseModel):
+    password: str = Field(min_length=6, max_length=64)
+
+
+class SetAdminRequest(BaseModel):
+    is_admin: bool
 
 
 def _sse(event: str, data: dict) -> str:
@@ -395,6 +410,81 @@ def admin_delete_document(name: str, user: dict = Depends(auth.require_admin)):
         return kb_manager.delete_document(name)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="文档不存在")
+
+
+# ============ 用户管理接口 (仅管理员) ============
+
+@app.get("/admin/users")
+def admin_list_users(user: dict = Depends(auth.require_admin)):
+    """列出全部用户"""
+    return auth.list_users()
+
+
+@app.post("/admin/users")
+def admin_create_user(req: CreateUserRequest, user: dict = Depends(auth.require_admin)):
+    """新建用户, 可直接指定为管理员"""
+    try:
+        return auth.create_user(req.username, req.password, req.is_admin)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/admin/users/{user_id}/password")
+def admin_reset_password(
+    user_id: int,
+    req: ResetPasswordRequest,
+    user: dict = Depends(auth.require_admin),
+):
+    """重置指定用户的密码"""
+    try:
+        ok = auth.set_password(user_id, req.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"ok": True}
+
+
+@app.post("/admin/users/{user_id}/admin")
+def admin_set_admin(
+    user_id: int,
+    req: SetAdminRequest,
+    user: dict = Depends(auth.require_admin),
+):
+    """设置/取消指定用户的管理员身份(不能操作自己, 防止自锁)"""
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="不能修改自己的管理员权限")
+    if not auth.set_admin(user_id, req.is_admin):
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"ok": True}
+
+
+@app.delete("/admin/users/{user_id}")
+def admin_delete_user(user_id: int, user: dict = Depends(auth.require_admin)):
+    """删除用户, 同时清理其全部会话与消息"""
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="不能删除当前登录的账号")
+    if not auth.delete_user(user_id):
+        raise HTTPException(status_code=404, detail="用户不存在")
+    delete_user_sessions(user_id)
+    return {"deleted": user_id}
+
+
+@app.get("/admin/users/{user_id}/sessions")
+def admin_list_user_sessions(user_id: int, user: dict = Depends(auth.require_admin)):
+    """查看指定用户的会话列表(按最近更新倒序)"""
+    if not auth.get_user_by_id(user_id):
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return list_sessions(user_id)
+
+
+@app.get("/admin/sessions/{session_id}/messages")
+def admin_session_messages(session_id: int, user: dict = Depends(auth.require_admin)):
+    """查看任意会话的问答详情(管理员不受会话归属限制)"""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"session": session, "messages": get_messages(session_id)}
 
 
 # ============ 前端静态资源(构建产物存在时同源托管) ============
