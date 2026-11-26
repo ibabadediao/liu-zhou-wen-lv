@@ -12,13 +12,14 @@ async function request(path, { method = 'GET', body } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   })
 
+  const data = await res.json().catch(() => ({}))
   if (res.status === 401) {
-    const err = new Error('未登录或登录已过期')
+    // 优先展示后端文案(如"用户名或密码错误"), 避免登录失败被误报为登录过期
+    const err = new Error(data.detail || '未登录或登录已过期')
     err.status = 401
     throw err
   }
 
-  const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.detail || `请求失败(${res.status})`)
     err.status = res.status
@@ -49,6 +50,7 @@ export const kbApi = {
   reingest: (name) =>
     request(`/admin/kb/documents/${encodeURIComponent(name)}/ingest`, { method: 'POST' }),
   ingestPending: () => request('/admin/kb/documents/ingest-pending', { method: 'POST' }),
+  reingestAll: () => request('/admin/kb/reingest-all', { method: 'POST' }),
 }
 
 export const userApi = {

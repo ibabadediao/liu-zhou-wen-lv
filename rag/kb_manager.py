@@ -4,6 +4,7 @@
 - 新增/删除会同步维护向量库(chroma_db)与去重清单(md5.txt)
 """
 import os
+from datetime import datetime
 
 from rag.vector_store import get_vector_store_service
 from utils.config_handler import chroma_config
@@ -34,6 +35,7 @@ class KnowledgeBaseManager:
                 "name": f,
                 "size": os.path.getsize(full),
                 "type": ext,
+                "updated_at": datetime.fromtimestamp(os.path.getmtime(full)).strftime("%Y-%m-%d %H:%M"),
                 "ingested": ingested,
                 "chunks": self.vs.get_chunk_count(full) if ingested else 0,
             })
@@ -84,4 +86,12 @@ class KnowledgeBaseManager:
         for name in pending:
             chunks = self.vs.add_file(self._resolve(name))
             results.append({"name": name, "ingested": chunks > 0, "chunks": chunks})
+        return {"count": len(results), "documents": results}
+
+    def reingest_all(self) -> dict:
+        """全量重建: 按当前源文件逐个重新切分入库全部文档"""
+        results = []
+        for doc in self.list_documents():
+            chunks = self.vs.reingest_file(self._resolve(doc["name"]))
+            results.append({"name": doc["name"], "ingested": chunks > 0, "chunks": chunks})
         return {"count": len(results), "documents": results}

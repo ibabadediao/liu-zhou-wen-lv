@@ -56,16 +56,34 @@
           </button>
         </div>
 
+        <div class="toolbar">
+          <input v-model.trim="keyword" class="search" placeholder="搜索文档名" />
+          <select v-model="typeFilter" class="type-select">
+            <option value="all">全部类型</option>
+            <option v-for="t in docTypes" :key="t" :value="t">{{ t.toUpperCase() }}</option>
+          </select>
+          <button
+            class="batch-btn"
+            :disabled="rebuildBusy || documents.length === 0"
+            title="按当前源文件重新切分入库全部文档"
+            @click="reingestAll"
+          >
+            <span v-if="!rebuildBusy">全部重建</span>
+            <span v-else class="mini-spinner dark"></span>
+          </button>
+        </div>
+
         <div v-if="loading" class="empty">加载中…</div>
         <div v-else-if="documents.length === 0" class="empty">知识库为空，先上传一个文档吧</div>
+        <div v-else-if="filteredDocuments.length === 0" class="empty">没有匹配的文档</div>
 
         <ul v-else class="doc-list">
-          <li v-for="d in documents" :key="d.name" class="doc-item">
+          <li v-for="d in filteredDocuments" :key="d.name" class="doc-item">
             <div class="doc-icon" :class="d.type">{{ d.type.toUpperCase() }}</div>
             <div class="doc-meta">
               <strong class="doc-name" :title="d.name">{{ d.name }}</strong>
               <span class="doc-sub">
-                {{ formatSize(d.size) }}
+                {{ formatSize(d.size) }} · 修改于 {{ d.updated_at }}
                 <template v-if="d.ingested"> · {{ d.chunks }} 个文本块</template>
                 <template v-else> · 未入库</template>
               </span>
@@ -240,6 +258,11 @@ const fileInput = ref(null)
 const batchBusy = ref(false)
 const busyName = ref('')
 
+// 文档筛选与重建
+const keyword = ref('')
+const typeFilter = ref('all')
+const rebuildBusy = ref(false)
+
 const users = ref([])
 const usersLoading = ref(true)
 const creating = ref(false)
@@ -256,6 +279,18 @@ const messagesLoading = ref(false)
 
 // 未入库文档数量: 决定「批量入库」按钮是否可用
 const pendingCount = computed(() => documents.value.filter((d) => !d.ingested).length)
+
+// 现有的文档类型(用于筛选下拉), 保持 txt/pdf 的固定顺序
+const docTypes = computed(() => [...new Set(documents.value.map((d) => d.type))].sort())
+
+// 关键词 + 类型筛选后的文档列表
+const filteredDocuments = computed(() => {
+  const kw = keyword.value.toLowerCase()
+  return documents.value.filter((d) => {
+    if (typeFilter.value !== 'all' && d.type !== typeFilter.value) return false
+    return !kw || d.name.toLowerCase().includes(kw)
+  })
+})
 
 let toastTimer = null
 
@@ -353,6 +388,24 @@ async function ingestAllPending() {
     showToast(e.message || '批量入库失败')
   } finally {
     batchBusy.value = false
+  }
+}
+
+async function reingestAll() {
+  if (!window.confirm('将按当前源文件重新切分入库全部文档，文档较多时耗时较长，确定继续？')) return
+  rebuildBusy.value = true
+  try {
+    const res = await kbApi.reingestAll()
+    showToast(`已重建 ${res.count} 个文档`)
+    await refresh()
+  } catch (e) {
+    if (e.status === 401) {
+      router.replace({ name: 'login' })
+      return
+    }
+    showToast(e.message || '重建失败')
+  } finally {
+    rebuildBusy.value = false
   }
 }
 
@@ -756,6 +809,39 @@ onMounted(() => {
 .batch-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.search {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 13.5px;
+  background: #fbfdfc;
+  transition: border-color 0.15s ease;
+}
+
+.search:focus {
+  border-color: var(--teal-600);
+  outline: none;
+}
+
+.type-select {
+  flex-shrink: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 13.5px;
+  color: #4d615b;
+  background: #fbfdfc;
+  cursor: pointer;
 }
 
 .empty {

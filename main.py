@@ -394,6 +394,12 @@ def admin_ingest_pending(user: dict = Depends(auth.require_admin)):
     return kb_manager.ingest_pending()
 
 
+@app.post("/admin/kb/reingest-all")
+def admin_reingest_all(user: dict = Depends(auth.require_admin)):
+    """全量重建: 按当前源文件重新切分入库全部文档"""
+    return kb_manager.reingest_all()
+
+
 @app.post("/admin/kb/documents/{name}/ingest")
 def admin_reingest_document(name: str, user: dict = Depends(auth.require_admin)):
     """重新入库单个文档: 清掉旧向量后按当前内容重新切分"""
@@ -506,4 +512,6 @@ if os.path.isdir(DIST_DIR):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 端口优先读 PORT 环境变量(云端沙箱注入), 本地无该变量时回落到 8000
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
